@@ -21,22 +21,30 @@ if not os.path.exists(result_csv_path):
     (train_x, train_y), (test_x, test_y) = cifar100.CIFAR100.load_data()
     num_batches_per_epoch = int(math.ceil(len(train_x) / batch_size))
     generator = cifar100.CIFAR100.load_generator(
-        train_x, train_y, batch_size, image_size=(299, 299))
+        train_x, train_y, batch_size, image_size=(299, 299)
+    )
     scoringModel = tf.keras.applications.InceptionV3(
-        include_top=False, weights="imagenet", pooling="avg")
+        include_top=False, weights="imagenet", pooling="avg"
+    )
 
     with open(result_csv_path, "w", newline="") as write_obj:
-        column_names = ["numpy_index", "label", ] + \
-            [f"feature_{i}" for i in range(scoringModel.output_shape[1])]
-        csv_writer = csv.DictWriter(write_obj, fieldnames=column_names,)
+        column_names = [
+            "numpy_index",
+            "label",
+        ] + [f"feature_{i}" for i in range(scoringModel.output_shape[1])]
+        csv_writer = csv.DictWriter(
+            write_obj,
+            fieldnames=column_names,
+        )
         csv_writer.writeheader()
         for i in tqdm(range(num_batches_per_epoch)):
             (x, y) = next(generator)
             results = scoringModel(x)
 
             for j, (feature, label) in enumerate(zip(results, y)):
-                feature_dict = {f"feature_{k}": f for k,
-                                f in enumerate(feature.numpy())}
+                feature_dict = {
+                    f"feature_{k}": f for k, f in enumerate(feature.numpy())
+                }
                 feature_dict["numpy_index"] = j + i * batch_size
                 feature_dict["label"] = label
 
@@ -81,10 +89,8 @@ for i in range(min(label_counts)):
     for j, label in enumerate(label_set):
         rows.append(df_list[j].iloc[i])
 
-ordered_balanced_df = pd.DataFrame(
-    rows, columns=["numpy_index", "label", "score"])
+ordered_balanced_df = pd.DataFrame(rows, columns=["numpy_index", "label", "score"])
 ordered_balanced_df = ordered_balanced_df.astype(
-    dtype={"numpy_index": "int64", "label": "int64", "score": "float64"})
+    dtype={"numpy_index": "int64", "label": "int64", "score": "float64"}
+)
 ordered_balanced_df.to_csv(ordered_balanced_result_csv_path)
-
-
