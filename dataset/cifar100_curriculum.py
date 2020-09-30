@@ -15,10 +15,11 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         self.step_length = step_length
         self.increase = increase
         self.starting_percent = starting_percent
+        self.current_length = int(starting_percent*len(self.x))
         
 
     def __len__(self):
-        return math.ceil(len(self.x) / self.batch_size)
+        return self.current_length
 
     def preprocess_image(self, x):
         x = x.reshape(3, 32, 32)
@@ -31,7 +32,12 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
     def __getitem__(self, idx):
         g = int(min(self.starting_percent*(self.increase **
                                            math.floor(idx/self.step_length)), 1)*len(self.x))
-        fraction_indices = self.ordered_indices[:g].tolist()
+        self.current_length = g
+        
+        #shuffle fraction
+        if idx % self.step_length == 0:
+            self.ordered_indices[:g] = np.random.permutation(self.ordered_indices[:g])
+        fraction_indices = self.ordered_indices[:g]
         fraction_x = self.x[fraction_indices]
         fraction_y = self.y[fraction_indices]
 
