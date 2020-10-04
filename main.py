@@ -65,11 +65,10 @@ if not os.path.exists(ordered_balanced_result_csv_path):
         else:
             svc = load(svm_path)
 
-        X = df[feature_columns].values
         scores = []
-        for batch in tqdm(np.array_split(X, 100)):
-            scores_batch = svc.predict_proba(batch)
-            scores_batch = np.max(scores_batch, axis=-1)
+        for batch_x, batch_y in tqdm(zip(np.array_split(X, 100), np.array_split(y, 100))):
+            scores_batch = svc.predict_proba(batch_x)
+            scores_batch = scores_batch[np.arange(len(scores_batch)), batch_y]
             scores.extend(scores_batch)
 
         df["score"] = scores
