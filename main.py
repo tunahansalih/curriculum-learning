@@ -1,6 +1,7 @@
 import csv
 import math
 import os
+
 import numpy as np
 import pandas as pd
 
@@ -10,17 +11,56 @@ from joblib import dump, load
 from sklearn.svm import SVC
 from tqdm import tqdm
 
-from dataset import cifar100
-from dataset import cifar100_curriculum
+from dataset import cifar100, cifar100_curriculum
 
+data_dir = "data"
 batch_size = 10
-result_csv_path = "data/cifar100_inception_features.csv"
-ordered_balanced_result_csv_path = "data/cifar100_ordered_balanced_indices.csv"
-svm_path = "data/svm.joblib"
+superclass = "small_mammals"
+
+# 'aquatic_mammals',
+# 'fish',
+# 'flowers',
+# 'food_containers',
+# 'fruit_and_vegetables',
+# 'household_electrical_devices',
+# 'household_furniture',
+# 'insects',
+# 'large_carnivores',
+# 'large_man-made_outdoor_things',
+# 'large_natural_outdoor_scenes',
+# 'large_omnivores_and_herbivores',
+# 'medium_mammals',
+# 'non-insect_invertebrates',
+# 'people',
+# 'reptiles',
+# 'small_mammals',
+# 'trees',
+# 'vehicles_1',
+# 'vehicles_2'
+
+if superclass is None:
+    result_csv_path = os.path.join(data_dir, "cifar100_inception_features.csv")
+    ordered_balanced_result_csv_path = os.path.join(
+        data_dir, "cifar100_ordered_balanced_indices.csv"
+    )
+    svm_path = os.path.join(data_dir, "svm.joblib")
+else:
+    superclass_data_dir = os.path.join(data_dir, superclass)
+    if not os.path.exists(superclass_data_dir):
+        os.makedirs(superclass_data_dir)
+    result_csv_path = os.path.join(
+        superclass_data_dir, "cifar100_inception_features.csv"
+    )
+    ordered_balanced_result_csv_path = os.path.join(
+        superclass_data_dir, "cifar100_ordered_balanced_indices.csv"
+    )
+    svm_path = os.path.join(superclass_data_dir, "svm.joblib")
 
 if not os.path.exists(ordered_balanced_result_csv_path):
     if not os.path.exists(result_csv_path):
-        (train_x, train_y), (test_x, test_y) = cifar100.CIFAR100.load_data()
+        (train_x, train_y), (test_x, test_y) = cifar100.CIFAR100.load_data(
+            superclass=superclass
+        )
         num_batches_per_epoch = int(math.ceil(len(train_x) / batch_size))
         generator = cifar100.CIFAR100.load_generator(
             train_x, train_y, batch_size, image_size=(299, 299)
@@ -52,7 +92,6 @@ if not os.path.exists(ordered_balanced_result_csv_path):
 
                     csv_writer.writerow(feature_dict)
 
-
     df = pd.read_csv(result_csv_path)
     if "score" not in df.columns:
         feature_columns = [column for column in df.columns if "feature" in column]
@@ -66,7 +105,9 @@ if not os.path.exists(ordered_balanced_result_csv_path):
             svc = load(svm_path)
 
         scores = []
-        for batch_x, batch_y in tqdm(zip(np.array_split(X, 100), np.array_split(y, 100))):
+        for batch_x, batch_y in tqdm(
+            zip(np.array_split(X, 100), np.array_split(y, 100))
+        ):
             scores_batch = svc.predict_proba(batch_x)
             scores_batch = scores_batch[np.arange(len(scores_batch)), batch_y]
             scores.extend(scores_batch)
@@ -74,7 +115,6 @@ if not os.path.exists(ordered_balanced_result_csv_path):
         df["score"] = scores
 
         df.to_csv(result_csv_path)
-
 
     labels = df["label"].values
     label_set, label_counts = np.unique(labels, return_counts=True)
@@ -90,8 +130,7 @@ if not os.path.exists(ordered_balanced_result_csv_path):
         for j, label in enumerate(label_set):
             rows.append(df_list[j].iloc[i])
 
-    ordered_balanced_df = pd.DataFrame(
-        rows, columns=["numpy_index", "label", "score"])
+    ordered_balanced_df = pd.DataFrame(rows, columns=["numpy_index", "label", "score"])
     ordered_balanced_df = ordered_balanced_df.astype(
         dtype={"numpy_index": "int64", "label": "int64", "score": "float64"}
     )
@@ -104,15 +143,15 @@ else:
     )
 
 
-ordered_indices = ordered_balanced_df["numpy_index"].values
-(train_x, train_y), (test_x, test_y) = cifar100_curriculum.CIFAR100Curriculum.load_data()
-num_steps = 10000
+# ordered_indices = ordered_balanced_df["numpy_index"].values
+# (train_x, train_y), (test_x, test_y) = cifar100_curriculum.CIFAR100Curriculum.load_data()
+# num_steps = 10000
 
-generator = cifar100_curriculum.CIFAR100Curriculum.load_generator(
-    train_x, train_y, ordered_indices, batch_size=10, step_length=1000, increase=2, starting_percent=0.1, image_size=(299, 299)
-)
+# generator = cifar100_curriculum.CIFAR100Curriculum.load_generator(
+#     train_x, train_y, ordered_indices, batch_size=10, step_length=1000, increase=2, starting_percent=0.1, image_size=(299, 299)
+# )
 
-for i in tqdm(range(num_steps)):
-    (x, y) = next(generator)
+# for i in tqdm(range(num_steps)):
+#     (x, y) = next(generator)
 
-    # TODO training script
+#     # TODO training script
