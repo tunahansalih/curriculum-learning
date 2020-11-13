@@ -1,1 +1,1 @@
-# thesis-work
+# MSc-thesis-work
