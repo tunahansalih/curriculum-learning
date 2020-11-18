@@ -11,10 +11,11 @@ from dataset import download
 
 
 class CIFAR100Sequence(tf.keras.utils.Sequence):
-    def __init__(self, x_set, y_set, batch_size, image_size=(299, 299)):
+    def __init__(self, x_set, y_set, batch_size, shuffle=False, image_size=(299, 299)):
         self.x, self.y = x_set, y_set
         self.batch_size = batch_size
         self.image_size = image_size
+        self.shuffle = shuffle
 
     def __len__(self):
         return math.ceil(len(self.x) / self.batch_size)
@@ -23,13 +24,21 @@ class CIFAR100Sequence(tf.keras.utils.Sequence):
         x = x.reshape(3, 32, 32)
         x = x.transpose(1, 2, 0)
         x = x / 255.0
-        x = x - 0.5
-        x = x * 2.0
+        # x = x - 0.5
+        # x = x * 2.0
         return x
 
     def __getitem__(self, idx):
-        batch_x = self.x[idx * self.batch_size : (idx + 1) * self.batch_size]
-        batch_y = self.y[idx * self.batch_size : (idx + 1) * self.batch_size]
+        if self.shuffle and idx % math.ceil(len(self.x) / self.batch_size) == 0:
+            rand_indices = np.random.permutation(len(self.x))
+            self.x = self.x[rand_indices]
+            self.y = self.y[rand_indices]
+
+        batch_indices = np.arange(
+            idx * self.batch_size, (idx + 1) * self.batch_size
+        ) % len(self.x)
+        batch_x = self.x[batch_indices]
+        batch_y = self.y[batch_indices]
         return (
             np.array(
                 [
@@ -46,7 +55,6 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         self,
         x_set,
         y_set,
-        ordered_indices,
         batch_size,
         step_length,
         increase,
@@ -54,7 +62,6 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         image_size=(299, 299),
     ):
         self.x, self.y = x_set, np.array(y_set)
-        self.ordered_indices = ordered_indices
         self.batch_size = batch_size
         self.image_size = image_size
         self.step_length = step_length
@@ -63,7 +70,7 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         self.current_length = int(starting_percent * len(self.x))
 
     def __len__(self):
-        return self.current_length
+        return int(math.ceil(self.current_length / self.batch_size))
 
     def preprocess_image(self, x):
         x = x.reshape(3, 32, 32)
@@ -74,6 +81,7 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         return x
 
     def __getitem__(self, idx):
+        # Calculate current pace
         g = int(
             min(
                 self.starting_percent
@@ -84,27 +92,25 @@ class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
         )
         self.current_length = g
 
-        # shuffle fraction
-        if idx % self.step_length == 0:
-            self.ordered_indices[:g] = np.random.permutation(self.ordered_indices[:g])
-        fraction_indices = self.ordered_indices[:g]
-        fraction_x = self.x[fraction_indices]
-        fraction_y = self.y[fraction_indices]
-
-        batch_indices = (
-            np.arange(idx * self.batch_size, (idx + 1) * self.batch_size) % g
-        )
-        batch_x = fraction_x[batch_indices]
-        batch_y = fraction_y[batch_indices]
-        return (
-            np.array(
+        # Get uniform random batch
+        batch_indices = np.random.choice(g, self.batch_size)
+        batch_x = self.x[batch_indices]
+        batch_y = self.y[batch_indices]
+        if self.image_size != (32, 32):
+            batch_x = np.array(
                 [
                     resize(self.preprocess_image(image), self.image_size)
                     for image in batch_x
                 ]
-            ),
-            batch_y,
-        )
+            )
+        else:
+            batch_x = np.array(
+                [
+                    self.preprocess_image(image)
+                    for image in batch_x
+                ]
+            )
+        return batch_x, batch_y
 
 
 class CIFAR100:
@@ -163,19 +169,20 @@ class CIFAR100:
         return (train_x, train_y), (test_x, test_y)
 
     @staticmethod
-    def load_generator(x, y, batch_size, image_size=(299, 299)):
-        cifar100_sequence = CIFAR100Sequence(x, y, batch_size, image_size)
-        enqueuer = tf.keras.utils.OrderedEnqueuer(
-            cifar100_sequence, use_multiprocessing=False, shuffle=False
+    def load_generator(x, y, batch_size, shuffle=False, image_size=(299, 299)):
+        cifar100_sequence = CIFAR100Sequence(
+            x, y, batch_size, shuffle=shuffle, image_size=image_size
         )
-        enqueuer.start(workers=1, max_queue_size=10)
+        enqueuer = tf.keras.utils.OrderedEnqueuer(
+            cifar100_sequence, use_multiprocessing=False
+        )
+        enqueuer.start(workers=1, max_queue_size=100)
         return enqueuer.get()
 
     @staticmethod
     def load_curriculum_generator(
         x,
         y,
-        ordered_indices,
         batch_size,
         step_length,
         increase,
@@ -185,7 +192,6 @@ class CIFAR100:
         cifar100_sequence = CIFAR100CurriculumSequence(
             x,
             y,
-            ordered_indices,
             batch_size,
             step_length,
             increase,
@@ -193,7 +199,7 @@ class CIFAR100:
             image_size,
         )
         enqueuer = tf.keras.utils.OrderedEnqueuer(
-            cifar100_sequence, use_multiprocessing=False, shuffle=False
+            cifar100_sequence, use_multiprocessing=False
         )
-        enqueuer.start(workers=1, max_queue_size=10)
+        enqueuer.start(workers=1, max_queue_size=100)
         return enqueuer.get()
