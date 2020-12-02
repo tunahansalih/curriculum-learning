@@ -7,7 +7,7 @@ def vgg_st(
     regularization_factor: float = 50e-4,
     bias_regularization_factor: float = None,
     batch_normalization: bool = False,
-) -> None:
+) -> tf.keras.Model:
     l2_reg = tf.keras.regularizers.l2(regularization_factor)
     if bias_regularization_factor is None:
         l2_bias_reg = None
@@ -89,7 +89,7 @@ def vgg_st(
 
     x = tf.keras.layers.Conv2D(
         filters=256,
-        kernel_size=(3, 3),
+        kernel_size=(2, 2),
         padding="same",
         kernel_regularizer=l2_reg,
         bias_regularizer=l2_bias_reg,
@@ -99,7 +99,7 @@ def vgg_st(
     x = tf.keras.layers.Activation(activation=activation)(x)
     x = tf.keras.layers.Conv2D(
         filters=256,
-        kernel_size=(3, 3),
+        kernel_size=(2, 2),
         padding="same",
         kernel_regularizer=l2_reg,
         bias_regularizer=l2_bias_reg,

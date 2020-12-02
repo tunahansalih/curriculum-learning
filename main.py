@@ -5,21 +5,16 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import tensorflow.keras.backend as K
-from sacred import SETTINGS, Experiment
-from sacred.observers import MongoObserver
-from sacred.utils import apply_backspaces_and_linefeeds
+import wandb
+from sklearn.model_selection import train_test_split
+
+
 from tqdm import tqdm
 
 from dataset import cifar100
 from dataset.cifar100 import CIFAR100
 from models.cifar100_model import vgg_st
 from scoring import knowledge_transfer
-
-SETTINGS.CAPTURE_MODE = "sys"
-
-ex = Experiment(name="curriculum_learning")
-ex.observers.append(MongoObserver(db_name="curriculum_learning"))
-ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 
 # superclasses = [
@@ -46,52 +41,40 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 #     "vehicles_1",
 #     "vehicles_2",
 # ]
-data_dir: str = "data"
-if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
-
-log_dir: str = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
 
 
-@ex.config
-def my_config():
-
+config = dict(
     # Model Parameters
-    model_name: str = "stVGG"
-    model_steps: int = 50000
-    model_optimizer: str = "sgd"
-    model_weights: str = None
-
+    model_name="stVGG",
+    model_steps=70000,
+    model_optimizer="sgd",
+    model_weights=None,
+    model_validation_step=1000,
     # Dataset Parameters
-    dataset: str = "cifar100"
-    dataset_superclass: str = None
-    dataset_batch_size: int = 100
-
+    dataset="cifar100",
+    dataset_superclass=None,
+    dataset_batch_size=100,
     # Learning Rate Parameters
-    lr_initial: float = 0.12
-    lr_decay_rate: float = 0.9
-    lr_minimum: float = 1e-3
-    lr_decay_step_length: int = 400
-
+    lr_initial=0.12,
+    lr_decay_rate=1.1,
+    lr_minimum=1e-3,
+    lr_decay_step_length=400,
     # Curriculum Parameters
-    curriculum: str = "curriculum"
-    curriculum_step_length: int = 100
-    curriculum_increase: int = 1.9
-    curriculum_starting_percent: int = 0.04
-    curriculum_order: int = "inception"
-    curriculum_balance: bool = True
+    curriculum="vanilla",
+    curriculum_step_length=100,
+    curriculum_increase=1.9,
+    curriculum_starting_percent=0.04,
+    curriculum_order="inception",
+    curriculum_balance=True,
+)
 
 
-@ex.automain
-def my_main(
-    _run,
-    _log,
+def run(
     model_name,
     model_steps,
     model_optimizer,
     model_weights,
+    model_validation_step,
     dataset,
     dataset_superclass,
     dataset_batch_size,
@@ -106,27 +89,24 @@ def my_main(
     curriculum_order,
     curriculum_balance,
 ):
-    run_id = _run._id
-    artifact_dir = os.path.join(log_dir, f"experiment_{str(run_id)}")
-    if not os.path.exists(artifact_dir):
-        os.makedirs(artifact_dir)
 
     if dataset == "cifar100":
         # Load CIFAR-100
         (train_x, train_y), (test_x, test_y) = cifar100.CIFAR100.load_data(
-            data_dir=data_dir, superclass=dataset_superclass
+            data_dir=data_dir, superclass=dataset_superclass, normalize=True
         )
+        classes = CIFAR100.label_encoder.classes_
+
     elif dataset == "cifar10":
         raise NotImplementedError("Cifar 10 has not yet been implemented")
     else:
         raise ValueError("Only cifar100 and cifar10 are supported")
 
-    classes = CIFAR100.label_encoder.classes_
     num_classes = len(classes)
 
     if model_name == "stVGG":
         model = vgg_st(num_classes=num_classes)
-        image_size = (32,32)
+        image_size = (32, 32)
     elif model_name == "EfficientNetB0":
         model = tf.keras.applications.EfficientNetB0(
             include_top=True,
@@ -134,10 +114,9 @@ def my_main(
             classes=num_classes,
             classifier_activation="softmax",
         )
-        image_size = (224,224)
+        image_size = (224, 224)
     else:
         raise ValueError("Only stVGG amd EfficientNetB0 is implemented")
-
 
     if curriculum in ["curriculum", "anti_curriculum"]:
         if curriculum_order == "inception":
@@ -170,6 +149,11 @@ def my_main(
     train_x = train_x[indices]
     train_y = train_y[indices]
 
+    # Split validation Data
+    train_x, validation_x, train_y, validation_y = train_test_split(
+        train_x, train_y, test_size=0.1, stratify=train_y, random_state=53
+    )
+
     if curriculum in ["curriculum", "anti_curriculum", "random"]:
         if curriculum_balance:
 
@@ -189,7 +173,16 @@ def my_main(
             train_x = train_x[balanced_indices]
             train_y = train_y[balanced_indices]
 
-        train_generator = cifar100.CIFAR100.load_curriculum_generator(
+        # train_generator = cifar100.CIFAR100.load_curriculum_generator(
+        #     x=train_x,
+        #     y=train_y,
+        #     batch_size=dataset_batch_size,
+        #     step_length=curriculum_step_length,
+        #     increase=curriculum_increase,
+        #     starting_percent=curriculum_starting_percent,
+        #     image_size=image_size,
+        # )
+        train_generator = cifar100.CIFAR100CurriculumSequence(
             x=train_x,
             y=train_y,
             batch_size=dataset_batch_size,
@@ -199,11 +192,13 @@ def my_main(
             image_size=image_size,
         )
     elif curriculum == "vanilla":
-        train_generator = cifar100.CIFAR100.load_generator(
+        train_generator = cifar100.CIFAR100CurriculumSequence(
             x=train_x,
             y=train_y,
             batch_size=dataset_batch_size,
-            shuffle=True,
+            step_length=None,
+            increase=None,
+            starting_percent=None,
             image_size=image_size,
         )
     else:
@@ -211,7 +206,15 @@ def my_main(
             "only curriculum, anti_curriculum, random and vanilla is accepted"
         )
 
-    test_generator = cifar100.CIFAR100.load_generator(
+    validation_generator = cifar100.CIFAR100Sequence(
+        x=validation_x,
+        y=validation_y,
+        batch_size=dataset_batch_size,
+        shuffle=False,
+        image_size=image_size,
+    )
+
+    test_generator = cifar100.CIFAR100Sequence(
         x=test_x,
         y=test_y,
         batch_size=dataset_batch_size,
@@ -219,22 +222,22 @@ def my_main(
         image_size=image_size,
     )
 
-    
-
     if model_optimizer == "sgd":
-        optimizer = tf.optimizers.SGD(
-            learning_rate=lr_initial,
-        )
+        optimizer = tf.optimizers.SGD(learning_rate=lr_initial, momentum=0)
     elif model_optimizer == "adam":
-         optimizer = tf.optimizers.Adam(
+        optimizer = tf.optimizers.Adam(
             learning_rate=lr_initial,
         )
     else:
-        raise ValueError("Only sgd is implemented")
+        raise ValueError("Only sgd and adam implemented")
+
+    loss_fn = tf.losses.SparseCategoricalCrossentropy(
+        reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
+    )
 
     model.compile(
         optimizer=optimizer,
-        loss=tf.losses.SparseCategoricalCrossentropy(),
+        loss=loss_fn,
         metrics=[
             tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy"),
             tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5, name="top5_accuracy"),
@@ -245,45 +248,71 @@ def my_main(
         model.load_weights(model_weights)
 
     for step in tqdm(range(model_steps)):
-        if curriculum in ["curriculum", "anti_curriculum", "random"]:
-            g = int(
-                min(
-                    curriculum_starting_percent
-                    * (
-                        curriculum_increase ** math.floor(step / curriculum_step_length)
-                    ),
-                    1,
-                )
-                * len(train_x)
-            )
-        else:
-            g = len(train_x)
+        g = train_generator.pacing(step)
 
-        train_x_batch, train_y_batch = next(train_generator)
+        train_x_batch, train_y_batch = train_generator[step]
         output = model.train_on_batch(
             train_x_batch,
             train_y_batch,
         )
         for metric_name, metric in zip(model.metrics_names, output):
-            ex.log_scalar(metric_name, value=metric, step=step)
-        ex.log_scalar("g", value=g, step=step)
-        ex.log_scalar(
-            "learning_rate", value=model.optimizer.learning_rate.numpy(), step=step
+            wandb.log({f"training/{metric_name}": metric}, step=step)
+        wandb.log(
+            {"g": g, "learning_rate": model.optimizer.learning_rate.numpy()}, step=step
         )
 
         if (step % lr_decay_step_length) == 0 and step != 0:
             lr_decayed = max(
-                model.optimizer.learning_rate.numpy() * lr_decay_rate, lr_minimum
+                model.optimizer.learning_rate.numpy() / lr_decay_rate, lr_minimum
             )
             K.set_value(model.optimizer.learning_rate, lr_decayed)
 
-        if step > 0 and step % 1000 == 0:
+        if step > 0 and step % model_validation_step == 0:
+            predictions = []
+            total_loss = 0
+            for validation_step in tqdm(
+                range(int(math.ceil(len(validation_y) / dataset_batch_size)))
+            ):
+                validation_x_batch, validation_y_batch = validation_generator[
+                    validation_step
+                ]
+                prediction_batch = model(validation_x_batch, training=False).numpy()
+                total_loss += loss_fn(validation_y_batch, prediction_batch).numpy()
+                for y, prediction in zip(validation_y_batch, prediction_batch):
+                    prediction_dict = {
+                        label: prob
+                        for label, prob in zip(
+                            list(CIFAR100.label_encoder.classes_), prediction
+                        )
+                    }
+                    prediction_dict["ground_truth"] = y
+                    predictions.append(prediction_dict)
+
+            df = pd.DataFrame(
+                predictions,
+                columns=["ground_truth"] + list(CIFAR100.label_encoder.classes_),
+            )
+
+            df.to_csv(
+                os.path.join(artifact_dir, f"validation_predictions_{step}.csv"),
+                index=False,
+            )
+            accuracy = np.mean(validation_y == df.iloc[:, 1:].idxmax(axis=1).values)
+            wandb.log({"validation/accuracy": accuracy}, step=step)
+            wandb.log(
+                {
+                    "validation/loss": total_loss
+                    / int(math.ceil(len(validation_y) / dataset_batch_size))
+                },
+                step=step,
+            )
             model.save_weights(os.path.join(artifact_dir, "model"))
 
     model.save_weights(os.path.join(artifact_dir, "model"))
     predictions = []
+
     for test_step in tqdm(range(int(math.ceil(len(test_y) / dataset_batch_size)))):
-        test_x_batch, test_y_batch = next(test_generator)
+        test_x_batch, test_y_batch = test_generator[test_step]
         prediction_batch = model(test_x_batch, training=False).numpy()
 
         for y, prediction in zip(test_y_batch, prediction_batch):
@@ -301,8 +330,25 @@ def my_main(
     )
 
     df.to_csv(os.path.join(artifact_dir, "test_predictions.csv"), index=False)
-    ex.add_artifact(os.path.join(artifact_dir, "test_predictions.csv"))
-
     accuracy = np.mean(test_y == df.iloc[:, 1:].idxmax(axis=1).values)
+    wandb.log({"test/accuracy": accuracy})
+    return accuracy
 
-    return accuracy.item()
+
+_run = wandb.init(project="curriculum-learning", config=config)
+run_id = _run.id
+
+data_dir = "data"
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
+
+log_dir = "logs"
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+artifact_dir = os.path.join(log_dir, f"experiment_{str(run_id)}")
+if not os.path.exists(artifact_dir):
+    os.makedirs(artifact_dir)
+
+
+run(**wandb.config)

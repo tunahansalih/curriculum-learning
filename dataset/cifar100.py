@@ -11,22 +11,14 @@ from dataset import download
 
 
 class CIFAR100Sequence(tf.keras.utils.Sequence):
-    def __init__(self, x_set, y_set, batch_size, shuffle=False, image_size=(299, 299)):
-        self.x, self.y = x_set, y_set
+    def __init__(self, x, y, batch_size, shuffle=False, image_size=(299, 299)):
+        self.x, self.y = x, y
         self.batch_size = batch_size
         self.image_size = image_size
         self.shuffle = shuffle
 
     def __len__(self):
         return math.ceil(len(self.x) / self.batch_size)
-
-    def preprocess_image(self, x):
-        x = x.reshape(3, 32, 32)
-        x = x.transpose(1, 2, 0)
-        x = x / 255.0
-        # x = x - 0.5
-        # x = x * 2.0
-        return x
 
     def __getitem__(self, idx):
         if self.shuffle and idx % math.ceil(len(self.x) / self.batch_size) == 0:
@@ -39,77 +31,62 @@ class CIFAR100Sequence(tf.keras.utils.Sequence):
         ) % len(self.x)
         batch_x = self.x[batch_indices]
         batch_y = self.y[batch_indices]
-        return (
-            np.array(
-                [
-                    resize(self.preprocess_image(image), self.image_size)
-                    for image in batch_x
-                ]
-            ),
-            batch_y,
-        )
+        if self.image_size != (32, 32):
+            batch_x = np.array([resize(image, self.image_size) for image in batch_x])
+        return batch_x, batch_y
 
 
 class CIFAR100CurriculumSequence(tf.keras.utils.Sequence):
     def __init__(
         self,
-        x_set,
-        y_set,
+        x,
+        y,
         batch_size,
-        step_length,
-        increase,
-        starting_percent,
+        step_length=None,
+        increase=None,
+        starting_percent=None,
         image_size=(299, 299),
     ):
-        self.x, self.y = x_set, np.array(y_set)
+        self.x, self.y = x, np.array(y)
         self.batch_size = batch_size
         self.image_size = image_size
         self.step_length = step_length
         self.increase = increase
         self.starting_percent = starting_percent
-        self.current_length = int(starting_percent * len(self.x))
+        self.current_length = self.pacing(0)
 
     def __len__(self):
         return int(math.ceil(self.current_length / self.batch_size))
 
-    def preprocess_image(self, x):
-        x = x.reshape(3, 32, 32)
-        x = x.transpose(1, 2, 0)
-        x = x / 255.0
-        x = x - 0.5
-        x = x * 2.0
-        return x
+    def pacing(self, idx):
+        if (
+            self.step_length is not None
+            and self.increase is not None
+            and self.starting_percent is not None
+        ):
+            g = int(
+                min(
+                    self.starting_percent
+                    * (self.increase ** math.floor(idx / self.step_length)),
+                    1,
+                )
+                * len(self.x)
+            )
+        else:
+            g = len(self.x)
+        return g
 
     def __getitem__(self, idx):
         # Calculate current pace
-        g = int(
-            min(
-                self.starting_percent
-                * (self.increase ** math.floor(idx / self.step_length)),
-                1,
-            )
-            * len(self.x)
-        )
-        self.current_length = g
+
+        self.current_length = self.pacing(idx)
 
         # Get uniform random batch
-        batch_indices = np.random.choice(g, self.batch_size)
+        batch_indices = np.random.choice(self.current_length, self.batch_size)
         batch_x = self.x[batch_indices]
         batch_y = self.y[batch_indices]
         if self.image_size != (32, 32):
-            batch_x = np.array(
-                [
-                    resize(self.preprocess_image(image), self.image_size)
-                    for image in batch_x
-                ]
-            )
-        else:
-            batch_x = np.array(
-                [
-                    self.preprocess_image(image)
-                    for image in batch_x
-                ]
-            )
+            batch_x = np.array([resize(image, self.image_size) for image in batch_x])
         return batch_x, batch_y
 
 
@@ -117,7 +94,7 @@ class CIFAR100:
     label_encoder = preprocessing.LabelEncoder()
 
     @classmethod
-    def load_data(cls, data_dir, superclass=None):
+    def load_data(cls, data_dir, superclass=None, normalize=True):
         url = "https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
         download_dir = os.path.join(data_dir, "CIFAR100/")
         data_dir = os.path.join(download_dir, "cifar-100-python")
@@ -131,10 +108,10 @@ class CIFAR100:
         with open(test_file, "rb") as f:
             test = pickle.loads(f.read(), encoding="latin1")
 
-        train_x = train["data"]
+        train_x = train["data"].astype(np.float)
         train_y = train["fine_labels"]
 
-        test_x = test["data"]
+        test_x = test["data"].astype(np.float)
         test_y = test["fine_labels"]
 
         if superclass is not None:
@@ -165,6 +142,29 @@ class CIFAR100:
         CIFAR100.label_encoder.fit(train_y)
         train_y = CIFAR100.label_encoder.transform(train_y)
         test_y = CIFAR100.label_encoder.transform(test_y)
+
+        train_x = train_x.reshape(-1, 3, 32, 32)
+        train_x = train_x.transpose(0, 2, 3, 1)
+
+        test_x = test_x.reshape(-1, 3, 32, 32)
+        test_x = test_x.transpose(0, 2, 3, 1)
+
+        if normalize:
+            mean_r = np.mean(train_x[:, :, :, 0])
+            mean_g = np.mean(train_x[:, :, :, 1])
+            mean_b = np.mean(train_x[:, :, :, 2])
+
+            std_r = np.std(train_x[:, :, :, 0])
+            std_g = np.std(train_x[:, :, :, 1])
+            std_b = np.std(train_x[:, :, :, 2])
+
+            train_x[:, :, :, 0] = (train_x[:, :, :, 0] - mean_r) / std_r
+            train_x[:, :, :, 1] = (train_x[:, :, :, 1] - mean_g) / std_g
+            train_x[:, :, :, 2] = (train_x[:, :, :, 2] - mean_b) / std_b
+
+            test_x[:, :, :, 0] = (test_x[:, :, :, 0] - mean_r) / std_r
+            test_x[:, :, :, 1] = (test_x[:, :, :, 1] - mean_g) / std_g
+            test_x[:, :, :, 2] = (test_x[:, :, :, 2] - mean_b) / std_b
 
         return (train_x, train_y), (test_x, test_y)
 
