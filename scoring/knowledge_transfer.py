@@ -37,8 +37,8 @@ def knowledge_transfer_scoring(
     if os.path.exists(result_csv_path):
         df = pd.read_csv(result_csv_path)
     else:
-        generator = cifar100.CIFAR100.load_generator(
-            train_x, train_y, batch_size, image_size=(299, 299)
+        generator = cifar100.CIFAR100Sequence(
+            x=train_x, y=train_y, batch_size=batch_size, image_size=(299, 299)
         )
         scoringModel = tf.keras.applications.InceptionV3(
             include_top=False, weights="imagenet", pooling="avg"
@@ -57,7 +57,7 @@ def knowledge_transfer_scoring(
             num_batches_per_epoch = int(math.ceil(len(train_x) / batch_size))
 
             for i in tqdm(range(num_batches_per_epoch)):
-                (x, y) = next(generator)
+                (x, y) = generator[i]
                 results = scoringModel(x)
 
                 for j, (feature, label) in enumerate(zip(results, y)):
